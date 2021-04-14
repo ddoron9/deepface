@@ -1,11 +1,7 @@
 import warnings
 warnings.filterwarnings("ignore")
-
-import os
-#os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-
 import time
+import os
 from os import path
 import numpy as np
 import pandas as pd
@@ -15,12 +11,6 @@ import pickle
 from deepface.basemodels import VGGFace, OpenFace, Facenet, FbDeepFace, DeepID, DlibWrapper, ArcFace, Boosting
 from deepface.extendedmodels import Age, Gender, Race, Emotion
 from deepface.commons import functions, realtime, distance as dst
-
-import tensorflow as tf
-tf_version = int(tf.__version__.split(".")[0])
-if tf_version == 2:
-	import logging
-	tf.get_logger().setLevel(logging.ERROR)
 
 def build_model(model_name):
 
@@ -149,14 +139,28 @@ def verify(img1_path, img2_path = '', model_name = 'VGG-Face', distance_metric =
 			for i in  model_names:
 				custom_model = models[i]
 
-				#img_path, model_name = 'VGG-Face', model = None, enforce_detection = True, detector_backend = 'mtcnn'
-				img1_representation = represent(img_path = img1_path
-						, model_name = model_name, model = custom_model
-						, enforce_detection = enforce_detection, detector_backend = detector_backend)
+				#decide input shape
+				input_shape = functions.find_input_shape(custom_model)
+				input_shape_x = input_shape[0]; input_shape_y = input_shape[1]
 
-				img2_representation = represent(img_path = img2_path
-						, model_name = model_name, model = custom_model
-						, enforce_detection = enforce_detection, detector_backend = detector_backend)
+				#----------------------
+				#detect and align faces
+
+				img1 = functions.preprocess_face(img=img1_path
+					, target_size=(input_shape_y, input_shape_x)
+					, enforce_detection = enforce_detection
+					, detector_backend = detector_backend)
+
+				img2 = functions.preprocess_face(img=img2_path
+					, target_size=(input_shape_y, input_shape_x)
+					, enforce_detection = enforce_detection
+					, detector_backend = detector_backend)
+
+				#----------------------
+				#find embeddings
+
+				img1_representation = custom_model.predict(img1)[0,:]
+				img2_representation = custom_model.predict(img2)[0,:]
 
 				#----------------------
 				#find distances between embeddings
@@ -347,106 +351,99 @@ def analyze(img_path, actions = ['emotion', 'age', 'gender', 'race'] , models = 
 	global_pbar = tqdm(range(0,len(img_paths)), desc='Analyzing', disable = disable_option)
 
 	for j in global_pbar:
-		img_path = img_paths[j]
-
-		resp_obj = {}
-
-		disable_option = False if len(actions) > 1 else True
-
-		pbar = tqdm(range(0,len(actions)), desc='Finding actions', disable = disable_option)
-
-		img_224 = None # Set to prevent re-detection
+		img_path = img_paths[j] 
+		img_224 = True if ('age' in actions or 'gender' in actions or 'race' in actions) else False # Set to prevent re-detection
 
 		region = [] # x, y, w, h of the detected face region
 		region_labels = ['x', 'y', 'w', 'h']
+ 
+		if 'emotion' in actions:	
+			imgs, regions = functions.preprocess_face(img = img_path, target_size = (48, 48), grayscale = True, enforce_detection = enforce_detection, detector_backend = detector_backend, return_region = True)
+		if img_224 :
+			img_224, regions_224 = functions.preprocess_face(img = img_path, target_size = (224, 224), grayscale = False, enforce_detection = enforce_detection, detector_backend = detector_backend, return_region = True)
+		
+		assert regions == regions_224, 'Expected the same shape of regions'
 
 		#facial attribute analysis
-		for index in pbar:
-			action = actions[index]
-			pbar.set_description("Action: %s" % (action))
+		resp_objs = []
+		for num in range(len(imgs)): 
+			resp_obj = {} 
+			for action in actions:  
+					
+				if action == 'emotion':
+					emotion_labels = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral']
 
-			if action == 'emotion':
-				emotion_labels = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral']
-				img, region = functions.preprocess_face(img = img_path, target_size = (48, 48), grayscale = True, enforce_detection = enforce_detection, detector_backend = detector_backend, return_region = True)
+					resp_obj["region"] = {}
 
-				resp_obj["region"] = {}
+					for i, parameter in enumerate(region_labels):
+						resp_obj["region"][parameter] = regions[num][i]
 
-				for i, parameter in enumerate(region_labels):
-					resp_obj["region"][parameter] = region[i]
+					emotion_predictions = models['emotion'].predict(imgs[num])[0,:]
 
-				emotion_predictions = models['emotion'].predict(img)[0,:]
+					sum_of_predictions = emotion_predictions.sum()
 
-				sum_of_predictions = emotion_predictions.sum()
+					resp_obj["emotion"] = {}
 
-				resp_obj["emotion"] = {}
+					for i in range(0, len(emotion_labels)):
+						emotion_label = emotion_labels[i]
+						emotion_prediction = 100 * emotion_predictions[i] / sum_of_predictions
+						resp_obj["emotion"][emotion_label] = emotion_prediction
 
-				for i in range(0, len(emotion_labels)):
-					emotion_label = emotion_labels[i]
-					emotion_prediction = 100 * emotion_predictions[i] / sum_of_predictions
-					resp_obj["emotion"][emotion_label] = emotion_prediction
+					resp_obj["dominant_emotion"] = emotion_labels[np.argmax(emotion_predictions)]
 
-				resp_obj["dominant_emotion"] = emotion_labels[np.argmax(emotion_predictions)]
+				elif action == 'age': 
+					resp_obj["region"] = {}
 
-			elif action == 'age':
-				if img_224 is None:
-					img_224, region = functions.preprocess_face(img = img_path, target_size = (224, 224), grayscale = False, enforce_detection = enforce_detection, detector_backend = detector_backend, return_region = True)
+					for i, parameter in enumerate(region_labels):
+						resp_obj["region"][parameter] = regions_224[num][i]
 
-				resp_obj["region"] = {}
+					age_predictions = models['age'].predict(img_224[num])[0,:]
+					apparent_age = Age.findApparentAge(age_predictions)
 
-				for i, parameter in enumerate(region_labels):
-					resp_obj["region"][parameter] = region[i]
+					resp_obj["age"] = int(apparent_age)
 
-				age_predictions = models['age'].predict(img_224)[0,:]
-				apparent_age = Age.findApparentAge(age_predictions)
+				elif action == 'gender': 
+					resp_obj["region"] = {}
 
-				resp_obj["age"] = int(apparent_age)
+					for i, parameter in enumerate(region_labels):
+						resp_obj["region"][parameter] = regions_224[num][i]
 
-			elif action == 'gender':
-				if img_224 is None:
-					img_224, region = functions.preprocess_face(img = img_path, target_size = (224, 224), grayscale = False, enforce_detection = enforce_detection, detector_backend = detector_backend, return_region = True)
+					gender_prediction = models['gender'].predict(img_224[num])[0,:]
 
-				resp_obj["region"] = {}
+					if np.argmax(gender_prediction) == 0:
+						gender = "Woman"
+					elif np.argmax(gender_prediction) == 1:
+						gender = "Man"
 
-				for i, parameter in enumerate(region_labels):
-					resp_obj["region"][parameter] = region[i]
+					resp_obj["gender"] = gender
 
-				gender_prediction = models['gender'].predict(img_224)[0,:]
+				elif action == 'race': 
+					race_predictions = models['race'].predict(img_224[num])[0,:]
+					race_labels = ['asian', 'indian', 'black', 'white', 'middle eastern', 'latino hispanic']
 
-				if np.argmax(gender_prediction) == 0:
-					gender = "Woman"
-				elif np.argmax(gender_prediction) == 1:
-					gender = "Man"
+					resp_obj["region"] = {}
 
-				resp_obj["gender"] = gender
+					for i, parameter in enumerate(region_labels):
+						resp_obj["region"][parameter] = regions_224[num][i]
 
-			elif action == 'race':
-				if img_224 is None:
-					img_224, region = functions.preprocess_face(img = img_path, target_size = (224, 224), grayscale = False, enforce_detection = enforce_detection, detector_backend = detector_backend, return_region = True) #just emotion model expects grayscale images
-				race_predictions = models['race'].predict(img_224)[0,:]
-				race_labels = ['asian', 'indian', 'black', 'white', 'middle eastern', 'latino hispanic']
+					sum_of_predictions = race_predictions.sum()
 
-				resp_obj["region"] = {}
+					resp_obj["race"] = {}
+					for i in range(0, len(race_labels)):
+						race_label = race_labels[i]
+						race_prediction = 100 * race_predictions[i] / sum_of_predictions
+						resp_obj["race"][race_label] = race_prediction
 
-				for i, parameter in enumerate(region_labels):
-					resp_obj["region"][parameter] = region[i]
-
-				sum_of_predictions = race_predictions.sum()
-
-				resp_obj["race"] = {}
-				for i in range(0, len(race_labels)):
-					race_label = race_labels[i]
-					race_prediction = 100 * race_predictions[i] / sum_of_predictions
-					resp_obj["race"][race_label] = race_prediction
-
-				resp_obj["dominant_race"] = race_labels[np.argmax(race_predictions)]
-
+					resp_obj["dominant_race"] = race_labels[np.argmax(race_predictions)]
+			resp_objs.append(resp_obj) 
 		#---------------------------------
 
 		if bulkProcess == True:
-			resp_objects.append(resp_obj)
-		else:
-			return resp_obj
+			resp_objects.append(resp_objs)
+		else:  
+			return resp_objs
 
+	#chk
 	if bulkProcess == True:
 
 		resp_obj = {}
@@ -566,10 +563,20 @@ def find(img_path, db_path, model_name ='VGG-Face', distance_metric = 'cosine', 
 				for j in model_names:
 					custom_model = models[j]
 
-					representation = represent(img_path = employee
-						, model_name = model_name, model = custom_model
-						, enforce_detection = enforce_detection, detector_backend = detector_backend)
+					#----------------------------------
+					#decide input shape
 
+					input_shape = functions.find_input_shape(custom_model)
+					input_shape_x = input_shape[0]; input_shape_y = input_shape[1]
+
+					#----------------------------------
+
+					img = functions.preprocess_face(img = employee
+								, target_size = (input_shape_y, input_shape_x)
+								, enforce_detection = enforce_detection
+								, detector_backend = detector_backend)
+
+					representation = custom_model.predict(img)[0,:]
 					instance.append(representation)
 
 				#-------------------------------
@@ -607,9 +614,18 @@ def find(img_path, db_path, model_name ='VGG-Face', distance_metric = 'cosine', 
 			for j in model_names:
 				custom_model = models[j]
 
-				target_representation = represent(img_path = img_path
-					, model_name = model_name, model = custom_model
-					, enforce_detection = enforce_detection, detector_backend =detector_backend)
+				#--------------------------------
+				#decide input shape
+				input_shape = functions.find_input_shape(custom_model)
+				input_shape_x = input_shape[0]; input_shape_y = input_shape[1]
+
+				#--------------------------------
+
+				img = functions.preprocess_face(img = img_path, target_size = (input_shape_y, input_shape_x)
+					, enforce_detection = enforce_detection
+					, detector_backend = detector_backend)
+
+				target_representation = custom_model.predict(img)[0,:]
 
 				for k in metric_names:
 					distances = []
@@ -700,7 +716,7 @@ def find(img_path, db_path, model_name ='VGG-Face', distance_metric = 'cosine', 
 
 	return None
 
-def represent(img_path, model_name = 'VGG-Face', model = None, enforce_detection = True, detector_backend = 'mtcnn'):
+def represent(img_path, model_name = 'VGG-Face', distance_metric = 'euclidean', model = None, enforce_detection = True, detector_backend = 'mtcnn'):
 
 	"""
 	This function represents facial images as vectors.
@@ -709,6 +725,8 @@ def represent(img_path, model_name = 'VGG-Face', model = None, enforce_detection
 		img_path: exact image path, numpy array or based64 encoded images could be passed.
 
 		model_name (string): VGG-Face, Facenet, OpenFace, DeepFace, DeepID, Dlib, ArcFace.
+
+		distance_metric (string): cosine, euclidean, euclidean_l2
 
 		model: Built deepface model. A face recognition model is built every call of verify function. You can pass pre-built face recognition model optionally if you will call verify function several times. Consider to pass model if you are going to call represent function in a for loop.
 
@@ -730,13 +748,11 @@ def represent(img_path, model_name = 'VGG-Face', model = None, enforce_detection
 	#decide input shape
 	input_shape =  input_shape_x, input_shape_y= functions.find_input_shape(model)
 
-	#detect and align
 	img = functions.preprocess_face(img = img_path
 		, target_size=(input_shape_y, input_shape_x)
 		, enforce_detection = enforce_detection
 		, detector_backend = detector_backend)
 
-	#represent
 	embedding = model.predict(img)[0].tolist()
 
 	return embedding
@@ -797,3 +813,8 @@ def detectFace(img_path, detector_backend = 'mtcnn'):
 #main
 
 functions.initializeFolder()
+
+# if __name__== '__main__':
+# 	objs = analyze(img_path = '/Users/doyikim/Downloads/im.webp', actions = ['age', 'gender', 'race', 'emotion']) 	
+# 	for obj in objs: 
+# 		print(obj["age"]," years old ",obj["dominant_race"]," ",obj["dominant_emotion"]," ", obj["gender"])

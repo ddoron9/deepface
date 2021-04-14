@@ -204,14 +204,17 @@ def detect_face(img, detector_backend = 'opencv', grayscale = False, enforce_det
 			faces = face_detector.detectMultiScale(img, 1.3, 5)
 		except:
 			pass
+		detected_faces = []
+		coordinate = [] 
+		if len(faces) > 0:  
+			for face in faces:
+				x,y,w,h = face
+				detected_face = img[int(y):int(y+h), int(x):int(x+w)]
+				detected_faces.append(detected_face)
+				coordinate.append([x, y, w, h])
+			return detected_faces, coordinate
 		
-		if len(faces) > 0:
-			x,y,w,h = faces[0] #focus on the 1st face found in the image
-			detected_face = img[int(y):int(y+h), int(x):int(x+w)]
-			return detected_face, [x, y, w, h]
-		
-		else: #if no face detected
-	
+		else: #if no face detected 
 			if enforce_detection != True:			
 				return img, img_region
 	
@@ -251,18 +254,17 @@ def detect_face(img, detector_backend = 'opencv', grayscale = False, enforce_det
 		if detections_df.shape[0] > 0:
 			
 			#TODO: sort detections_df
-			
-			#get the first face in the image	
-			instance = detections_df.iloc[0]
-			
-			left = instance["left"]
-			right = instance["right"]
-			bottom = instance["bottom"]
-			top = instance["top"]
-			
-			detected_face = base_img[int(top*aspect_ratio_y):int(bottom*aspect_ratio_y), int(left*aspect_ratio_x):int(right*aspect_ratio_x)]
-			
-			return detected_face, [int(left*aspect_ratio_x), int(top*aspect_ratio_y), int(right*aspect_ratio_x) - int(left*aspect_ratio_x), int(bottom*aspect_ratio_y) - int(top*aspect_ratio_y)]
+			detected_faces, coordinate = [], [] 
+			for index, instance in detections_df.iterrows(): 
+				left = instance["left"]
+				right = instance["right"]
+				bottom = instance["bottom"]
+				top = instance["top"]
+				
+				detected_face = base_img[int(top*aspect_ratio_y):int(bottom*aspect_ratio_y), int(left*aspect_ratio_x):int(right*aspect_ratio_x)]
+				detected_faces.append(detected_face)
+				coordinate.append( [int(left*aspect_ratio_x), int(top*aspect_ratio_y), int(right*aspect_ratio_x) - int(left*aspect_ratio_x), int(bottom*aspect_ratio_y) - int(top*aspect_ratio_y)])
+			return detected_faces, coordinate
 			
 		else: #if no face detected
 	
@@ -275,17 +277,20 @@ def detect_face(img, detector_backend = 'opencv', grayscale = False, enforce_det
 	
 	elif detector_backend == 'dlib':
 
-		detections = face_detector(img, 1)
+		detections = face_detector(img)
 		
 		if len(detections) > 0:
 			
+			detected_faces = []
+			coordinate = []
 			for idx, d in enumerate(detections):
 				left = d.left(); right = d.right()
 				top = d.top(); bottom = d.bottom()
 				
-				detected_face = img[top:bottom, left:right]
-				
-				return detected_face, [left, top, right - left, bottom - top]
+				detected_face = img[top:bottom, left:right] 
+				detected_faces.append(detected_face)
+				coordinate.append([left, top, right - left, bottom - top])
+			return detected_faces, coordinate
 			
 		else: #if no face detected
 	
@@ -295,16 +300,20 @@ def detect_face(img, detector_backend = 'opencv', grayscale = False, enforce_det
 			else:
 				raise ValueError("Face could not be detected. Please confirm that the picture is a face photo or consider to set enforce_detection param to False.") 
 		
-	elif detector_backend == 'mtcnn':
+	elif detector_backend == 'mtcnn': 
 		
 		img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) #mtcnn expects RGB but OpenCV read BGR
 		detections = face_detector.detect_faces(img_rgb)
 		
 		if len(detections) > 0:
-			detection = detections[0]
-			x, y, w, h = detection["box"]
-			detected_face = img[int(y):int(y+h), int(x):int(x+w)]
-			return detected_face, [x, y, w, h]
+			coordinate = []
+			detected_faces = []
+			for detection in detections:
+				x, y, w, h = detection["box"]
+				detected_face = img[int(y):int(y+h), int(x):int(x+w)] 
+				detected_faces.append(detected_face)
+				coordinate.append([x, y, w, h])
+			return detected_faces, coordinate
 		
 		else: #if no face detected
 			if not enforce_detection:			
@@ -446,32 +455,34 @@ def preprocess_face(img, target_size=(224, 224), grayscale = False, enforce_dete
 	img = load_image(img)
 	base_img = img.copy()
 	
-	img, region = detect_face(img = img, detector_backend = detector_backend, grayscale = grayscale, enforce_detection = enforce_detection)
-	
+	imgs, regions = detect_face(img = img, detector_backend = detector_backend, grayscale = grayscale, enforce_detection = enforce_detection)
 	#--------------------------
-	
-	if img.shape[0] > 0 and img.shape[1] > 0:
-		img = align_face(img = img, detector_backend = detector_backend)
+	if len(imgs) > 0: 
+		for i, img in enumerate(imgs):  
+			img = align_face(img = img, detector_backend = detector_backend)
+			imgs[i] = img
 	else:
-		
 		if enforce_detection == True:
 			raise ValueError("Detected face shape is ", img.shape,". Consider to set enforce_detection argument to False.")
 		else: #restore base image 
-			img = base_img.copy()
+			imgs, regions = detect_face(img = img, detector_backend = detector_backend, grayscale = grayscale, enforce_detection = enforce_detection)
+
 		
 	#--------------------------
 	
 	#post-processing
-	if grayscale == True:
-		img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+	img_pixels = []
+	for i, img in enumerate(imgs):
+		if grayscale == True:
+			img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 		
-	img = cv2.resize(img, target_size)
-	img_pixels = image.img_to_array(img)
-	img_pixels = np.expand_dims(img_pixels, axis = 0)
-	img_pixels /= 255 #normalize input in [0, 1]
-	
+		img = cv2.resize(img, target_size)
+		img_pixel = image.img_to_array(img)
+		img_pixel = np.expand_dims(img_pixel, axis = 0)
+		img_pixel /= 255 #normalize input in [0, 1]
+		img_pixels.append(img_pixel)
 	if return_region == True:
-		return img_pixels, region
+		return img_pixels, regions
 	else:
 		return img_pixels
 
@@ -491,4 +502,4 @@ def find_input_shape(model):
 		input_shape = tuple(input_shape)
 	
 	return input_shape
-	
+	 

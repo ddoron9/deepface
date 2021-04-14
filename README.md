@@ -1,5 +1,7 @@
 # deepface
 
+revising deepface to inference multiple faces in one picture.
+
 [![Downloads](https://pepy.tech/badge/deepface)](https://pepy.tech/project/deepface)
 [![Stars](https://img.shields.io/github/stars/serengil/deepface)](https://github.com/serengil/deepface)
 [![License](http://img.shields.io/:license-MIT-green.svg?style=flat)](https://github.com/serengil/deepface/blob/master/LICENSE)

@@ -813,8 +813,4 @@ def detectFace(img_path, detector_backend = 'mtcnn'):
 #main
 
 functions.initializeFolder()
-
-# if __name__== '__main__':
-# 	objs = analyze(img_path = '/Users/doyikim/Downloads/im.webp', actions = ['age', 'gender', 'race', 'emotion']) 	
-# 	for obj in objs: 
-# 		print(obj["age"]," years old ",obj["dominant_race"]," ",obj["dominant_emotion"]," ", obj["gender"])
+ 
